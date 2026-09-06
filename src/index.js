@@ -13,7 +13,8 @@ console.log('Starting Mineflayer + llama.cpp agent...');
 console.log(`Minecraft: ${config.minecraft.host}:${config.minecraft.port}`);
 console.log(`Username:   ${config.minecraft.username}`);
 console.log(`llama.cpp:  ${config.llama.baseUrl}`);
-console.log(`Auto-hunt:  ${config.automation.autoHunt ? 'enabled' : 'disabled'} (ask first: ${config.automation.askBeforeAutoHunt ? 'yes' : 'no'})`);
+console.log(`Auto-eat:   ${config.automation.autoEat ? 'enabled' : 'disabled'}`);
+console.log(`Auto-armor: ${config.automation.autoEquipArmor ? 'enabled' : 'disabled'}`);
 
 const bot = mineflayer.createBot(config.minecraft);
 bot.loadPlugin(pathfinder);

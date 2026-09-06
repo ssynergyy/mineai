@@ -56,11 +56,8 @@ module.exports = {
     hostile: list('HOSTILE_PLAYERS')
   },
   automation: {
-    askBeforeAutoHunt: bool('ASK_BEFORE_AUTO_HUNT', false),
     autoEat: bool('AUTO_EAT', true),
-    autoEquipArmor: bool('AUTO_EQUIP_ARMOR', true),
-    autoHunt: bool('AUTO_HUNT', true),
-    autoHuntRange: number('AUTO_HUNT_RANGE', 32)
+    autoEquipArmor: bool('AUTO_EQUIP_ARMOR', true)
   },
   persona: loadPersona(),
   agent: {

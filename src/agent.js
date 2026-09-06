@@ -13,7 +13,7 @@ function observation(bot) {
     nearbyEntities: Object.values(bot.entities).filter(e => e !== bot.entity && e.position && bot.entity.position.distanceTo(e.position) <= config.agent.observationRadius).slice(0, 40).map(e => ({
       id: e.id,
       type: e.type,
-      name: e.username || e.name || e.mobType,
+      name: e.username || e.name || e.displayName,
       position: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) },
       health: e.health ?? null
     })),
@@ -28,11 +28,11 @@ const CORE = `ACTUAL BOT CAPABILITIES:
 - Use tools to act; do not merely explain what could be done.
 - The bot can dig, place blocks, craft with 2x2 or a crafting table, use furnace/smoker/blast furnace, use enchantment tables, use anvils, and trade with villagers.
 - The bot can drop items onto hoppers, deliver items to players, follow entities, patrol arbitrary coordinate lists, and fight using live entity tracking.
-- Automatic survival is handled locally: eat when health is not full or hunger is below half, auto-equip better armor, and auto-hunt animals when no food is available according to ASK_BEFORE_AUTO_HUNT.
+- Automatic survival is handled locally: auto-eat when hunger is below half (or when damaged and there is room to eat), auto-equip better armor, and report when no food remains. The bot does NOT auto-hunt animals.
 - The local security layer follows protected players and attacks anything that hurts them; it also defends the bot against mobs/attackers. It auto-switches to the best available weapon.
 - NEVER intentionally attack a player whose username contains EliteSynergy. This applies even if the name is something like idddEliteSynergygfse.
 - Friendly, hostile, and protected player lists are maintained through manage_player_list. Protected players are NOT configured in .env.
-- Hostile-list players cause the local security layer to ask an EliteSynergy-containing owner for permission before intentional attack. Owner replies are \"yes PlayerName\" or \"no PlayerName\". Hunting approval is \"yes hunt\" or \"no hunt\".
+- Hostile-list players cause the local security layer to ask an EliteSynergy-containing owner for permission before intentional attack. Owner replies are \"yes PlayerName\" or \"no PlayerName\".
 - If asked to protect a player, add them to the protected list; the local security layer then follows and defends them.
 - The requester is explicitly supplied in each user message. When the user says \"me\", use that requester.
 - When a request comes from an EliteSynergy-containing username, it is locally trusted and does not require COMMAND_PASSWORD.

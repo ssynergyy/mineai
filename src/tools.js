@@ -7,7 +7,7 @@ function findItem(bot, name) {
   const target = String(name).toLowerCase();
   return bot.inventory.items().find(i => i.name.toLowerCase() === target || i.displayName.toLowerCase() === target);
 }
-function itemName(entity) { return entity?.username || entity?.name || entity?.displayName || entity?.mobType || 'unknown'; }
+function itemName(entity) { return entity?.username || entity?.name || entity?.displayName || entity?.displayName || 'unknown'; }
 function taskToken(bot, name) { return bot.tasks.start(name); }
 function assertCurrent(bot, token) { if (!bot.tasks.isCurrent(token)) throw new Error('Task cancelled'); }
 
@@ -346,7 +346,7 @@ async function runTool(bot, name, args) {
     }
     case 'list_villager_trades': {
       const entity = bot.entities[Number(args.entityId)];
-      if (!entity || entity.type !== 'mob' || !String(entity.mobType || entity.name || '').toLowerCase().includes('villager')) throw new Error('Villager entity not found');
+      if (!entity || entity.type !== 'mob' || !String(entity.displayName || entity.name || '').toLowerCase().includes('villager')) throw new Error('Villager entity not found');
       const token = taskToken(bot, 'villager_inspect'); await moveTo(bot, entity.position, 3, token); assertCurrent(bot, token);
       const villager = await bot.openVillager(entity);
       try {

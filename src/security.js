@@ -65,7 +65,7 @@ class Security {
 
   attack(entity, reason = 'self-defense') {
     if (!entity || !entity.position || !this.enabled) return false;
-    const name = entity.username || entity.name || entity.displayName || entity.mobType || 'unknown';
+    const name = entity.username || entity.name || entity.displayName || entity.displayName || 'unknown';
     if (entity.type === 'player' && this.isElite(name)) return false;
     void this.equipBestWeapon();
     this.bot.pvp.attack(entity);
@@ -87,12 +87,6 @@ class Security {
   permissionMessage(username, message) {
     if (!this.isElite(username)) return false;
     const text = String(message).trim();
-    const hunt = text.match(/^(yes|no)\s+hunt$/i);
-    if (hunt) {
-      this.bot.huntApproval = hunt[1].toLowerCase() === 'yes';
-      this.bot.whisper(username, this.bot.huntApproval ? 'Auto-hunt approved.' : 'Auto-hunt denied.');
-      return true;
-    }
     const m = text.match(/^(yes|no)\s+(.+)$/i);
     if (!m) return false;
     const decision = m[1].toLowerCase();
@@ -114,7 +108,7 @@ class Security {
     if (!this.enabled || !entity) return;
     if (entity === this.bot.entity) {
       if (source?.position && source !== this.bot.entity) {
-        const name = source.username || source.name || source.displayName || source.mobType || 'unknown';
+        const name = source.username || source.name || source.displayName || source.displayName || 'unknown';
         if (source.type === 'player' && this.isElite(name)) {
           this.stopCombat();
           return;
@@ -124,7 +118,7 @@ class Security {
       return;
     }
     if (entity.type === 'player' && this.isProtected(entity.username) && source?.position) {
-      const name = source.username || source.name || source.displayName || source.mobType || 'unknown';
+      const name = source.username || source.name || source.displayName || source.displayName || 'unknown';
       if (source.type === 'player' && (this.isElite(name) || this.isFriendly(name))) return;
       this.attack(source, `protecting ${entity.username}`);
     }
