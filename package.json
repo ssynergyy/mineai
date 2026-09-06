@@ -1,6 +1,6 @@
 {
   "name": "mineflayer-llama-agent",
-  "version": "1.5.1",
+  "version": "1.5.4",
   "private": true,
   "description": "Autonomous Mineflayer Minecraft bot powered by a local llama.cpp server",
   "main": "src/index.js",

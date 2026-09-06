@@ -109,3 +109,7 @@ Complex goals are automatically sent through a planning pass when they look mult
 The retry guard tracks repeated failures per task. Two repeated failures of the same tool+arguments are allowed; a third identical failing attempt is blocked and the AI is forced to change strategy.
 
 Security remains outside the normal task queue. Emergency self-defense pauses ordinary work and resumes it afterward. Protection emergencies are higher priority than self-defense. `!stop` clears the entire queue and all security combat state.
+
+
+## v1.5.4 performance and loop protection
+The agent caches automatic llama.cpp model discovery, uses tighter observation/history limits, throttles redundant armor/weapon checks, and includes a loop guard that blocks repeated identical actions when the world state is not changing. Progress-only replies such as 'still working' receive one corrective prompt so the agent either acts, reports a concrete blocker, or finishes.
