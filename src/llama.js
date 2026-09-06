@@ -46,15 +46,17 @@ async function getModel() {
 
 async function chat(messages, tools) {
   const model = await getModel();
-
-  return request("/chat/completions", {
+  const body = {
     model,
     messages,
-    tools,
-    tool_choice: "auto",
     temperature: config.agent.temperature,
     max_tokens: config.agent.maxTokens
-  });
+  };
+  if (Array.isArray(tools) && tools.length) {
+    body.tools = tools;
+    body.tool_choice = "auto";
+  }
+  return request("/chat/completions", body);
 }
 
 module.exports = { chat, getModel };

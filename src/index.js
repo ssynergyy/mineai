@@ -13,8 +13,6 @@ console.log('Starting Mineflayer + llama.cpp agent...');
 console.log(`Minecraft: ${config.minecraft.host}:${config.minecraft.port}`);
 console.log(`Username:   ${config.minecraft.username}`);
 console.log(`llama.cpp:  ${config.llama.baseUrl}`);
-console.log(`Auto-eat:   ${config.automation.autoEat ? 'enabled' : 'disabled'}`);
-console.log(`Auto-armor: ${config.automation.autoEquipArmor ? 'enabled' : 'disabled'}`);
 
 const bot = mineflayer.createBot(config.minecraft);
 bot.loadPlugin(pathfinder);
@@ -27,15 +25,19 @@ let automation;
 let automationTimer;
 let protectionTimer;
 let securityScanTimer;
+let securityCombatTimer;
 const recentRaw = new Map();
 
 function hardStop(reason = 'manual stop') {
-  bot.tasks.cancel();
+  bot.tasks.cancel(reason);
   try { bot.pvp.stop(); } catch {}
   try { bot.pathfinder.setGoal(null); } catch {}
   try { bot.clearControlStates(); } catch {}
   if (agent) agent.cancel(reason);
-  if (security) security.currentProtected = null;
+  if (security) {
+    security.currentProtected = null;
+    security.stopCombat();
+  }
   console.log(`[bot] ALL TASKS STOPPED: ${reason}`);
 }
 
@@ -53,6 +55,9 @@ bot.once('spawn', () => {
   automationTimer = setInterval(() => { void automation?.tick(); }, 2500);
   protectionTimer = setInterval(() => security?.maintainProtectedFollow(), 1000);
   securityScanTimer = setInterval(() => security?.scanPlayers(), 1000);
+  securityCombatTimer = setInterval(() => security?.maintainEmergency(), 250);
+  bot.agentQueueLength = 0;
+  bot.agent = agent;
 
   console.log(`[bot] Spawned at ${bot.entity.position}`);
   console.log('[bot] AI agent ready.');
@@ -161,6 +166,7 @@ bot.on('end', () => {
   if (automationTimer) clearInterval(automationTimer);
   if (protectionTimer) clearInterval(protectionTimer);
   if (securityScanTimer) clearInterval(securityScanTimer);
+  if (securityCombatTimer) clearInterval(securityCombatTimer);
   console.log('[bot] Connection ended. Exiting.');
   process.exit(1);
 });

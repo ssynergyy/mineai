@@ -64,6 +64,7 @@ module.exports = {
     maxSteps: number('AGENT_MAX_STEPS', 24),
     temperature: number('AGENT_TEMPERATURE', 0.2),
     maxTokens: number('AGENT_MAX_TOKENS', 900),
-    observationRadius: number('AGENT_OBSERVATION_RADIUS', 20)
+    observationRadius: number('AGENT_OBSERVATION_RADIUS', 20),
+    defaultPriority: String(process.env.DEFAULT_TASK_PRIORITY || 'medium').trim().toLowerCase()
   }
 };

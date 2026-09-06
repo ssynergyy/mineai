@@ -8,7 +8,11 @@ function findItem(bot, name) {
   return bot.inventory.items().find(i => i.name.toLowerCase() === target || i.displayName.toLowerCase() === target);
 }
 function itemName(entity) { return entity?.username || entity?.name || entity?.displayName || entity?.displayName || 'unknown'; }
-function taskToken(bot, name) { return bot.tasks.start(name); }
+function taskToken(bot, _name) {
+  const token = bot.tasks.currentToken?.();
+  if (token == null) throw new Error('No active user task');
+  return token;
+}
 function assertCurrent(bot, token) { if (!bot.tasks.isCurrent(token)) throw new Error('Task cancelled'); }
 
 function nearestBlock(bot, names, maxDistance = 24) {
@@ -162,6 +166,10 @@ function toolDefinitions() {
     fn('chat', 'Send public Minecraft chat.', obj({ message: { type: 'string' } }, ['message'])),
     fn('whisper', 'Whisper a player.', obj({ player: { type: 'string' }, message: { type: 'string' } }, ['player','message'])),
     fn('manage_player_list', 'Manage friendly/hostile/protected player lists. Protected is runtime-only and must not use .env.', obj({ action: { type: 'string', enum: ['list','add_friendly','remove_friendly','add_hostile','remove_hostile','add_protected','remove_protected'] }, player: { type: 'string' } }, ['action'])),
+    fn('queue_subtasks', 'Create sub-tasks under the currently executing main task. subPriority is 1-100; executeOnlyAfter may be null, previous, or an existing task id.', obj({ subtasks: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, subPriority: { type: 'number' }, executeOnlyAfter: {}, note: { type: 'string' } }, required: ['text','subPriority'], additionalProperties: false } } }, ['subtasks'])),
+    fn('get_task_queue', 'Inspect all queued, waiting, running, and completed task metadata.', obj()),
+    fn('set_task_note', 'Attach a short planning note/tie-break hint to a task.', obj({ taskId: { type: 'number' }, note: { type: 'string' }, tieRank: { type: 'number' } }, ['taskId','note'])),
+    fn('set_task_priority', 'Change a task priority. Top > High > Medium > Low > Background.', obj({ taskId: { type: 'number' }, priority: { type: 'string', enum: ['top','high','medium','low','background'] } }, ['taskId','priority'])),
     fn('wait', 'Wait briefly.', obj({ milliseconds: { type: 'number', default: 1000 } }))
   ];
 }
@@ -215,10 +223,13 @@ async function runTool(bot, name, args) {
       return { patrolComplete: true, loopsCompleted: loop };
     }
     case 'stop':
-      bot.tasks.cancel(); try { bot.pvp.stop(); } catch {}
+      bot.agent?.cancel('tool stop');
+      bot.tasks.cancel('tool stop');
+      if (bot.security) bot.security.stopCombat();
+      else { try { bot.pvp.stop(); } catch {} }
       try { bot.pathfinder.setGoal(null); } catch {}
       bot.clearControlStates();
-      return { stopped: true };
+      return { stopped: true, queuedTasksCleared: true };
     case 'look_at': {
       const target = new Vec3(Number(args.x), Number(args.y), Number(args.z));
       await bot.lookAt(target, true); return { lookingAt: pos(target) };
@@ -257,9 +268,13 @@ async function runTool(bot, name, args) {
       const e = bot.entities[Number(args.entityId)]; if (!e?.position) throw new Error(`Entity ${args.entityId} not found`);
       taskToken(bot, 'combat');
       if (e.type === 'player' && bot.security?.isElite(e.username)) throw new Error('Refusing to intentionally attack a player whose name contains EliteSynergy');
-      if (bot.security) await bot.security.equipBestWeapon();
-      bot.pvp.attack(e);
-      return { attacking: { id: e.id, name: itemName(e) } };
+      if (bot.security) {
+        const started = await bot.security.startManualCombat(e, 'AI/user-requested combat');
+        if (!started) throw new Error('Security layer refused this target');
+      } else {
+        bot.pvp.attack(e);
+      }
+      return { attacking: { id: e.id, name: itemName(e), playerTargetLockedForAtLeastMs: e.type === 'player' ? 15000 : 0 } };
     }
     case 'give_items_to_player': {
       const p = bot.players[String(args.player)] || Object.values(bot.players).find(x => x?.username?.toLowerCase() === String(args.player).toLowerCase());
@@ -377,6 +392,20 @@ async function runTool(bot, name, args) {
       if (!args.player) throw new Error('Player is required for this action');
       return s[op](list, args.player);
     }
+    case 'queue_subtasks': {
+      const parentId = bot.agentContext?.taskId;
+      if (parentId == null) throw new Error('No active parent task');
+      return { parentId, created: bot.agent.addSubtasks(parentId, args.subtasks) };
+    }
+    case 'get_task_queue': return bot.agent?.queueSnapshot?.() || [];
+    case 'set_task_note': {
+      const t = bot.agent?.queue?.find(x => x.id === Number(args.taskId));
+      if (!t) throw new Error(`Task #${args.taskId} not found`);
+      t.note = String(args.note || '').slice(0, 180);
+      if (Number.isFinite(Number(args.tieRank))) t.tieRank = Number(args.tieRank);
+      return { updated: t.id, note: t.note, tieRank: t.tieRank };
+    }
+    case 'set_task_priority': return bot.agent.setTaskPriority(args.taskId, args.priority);
     case 'wait': { const ms = Math.min(10000, Math.max(0, Number(args.milliseconds ?? 1000))); await new Promise(r => setTimeout(r, ms)); return { waitedMs: ms }; }
     default: throw new Error(`Unknown tool: ${name}`);
   }

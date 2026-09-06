@@ -1,9 +1,6 @@
 const FOOD_NAMES = new Set([
-  'apple','golden_apple','enchanted_golden_apple','bread','carrot','golden_carrot','potato','baked_potato','poisonous_potato',
-  'beetroot','beetroot_soup','mushroom_stew','rabbit_stew','suspicious_stew','dried_kelp','melon_slice','sweet_berries',
-  'glow_berries','chorus_fruit','cooked_beef','cooked_porkchop','cooked_mutton','cooked_chicken','cooked_rabbit',
-  'cooked_cod','cooked_salmon','pufferfish','tropical_fish','cod','salmon','beef','porkchop','mutton','chicken',
-  'rabbit','rotten_flesh','spider_eye','honey_bottle','cookie','pumpkin_pie','cake'
+  'apple','golden_apple','enchanted_golden_apple','bread','carrot','golden_carrot','potato','baked_potato','poisonous_potato','beetroot','beetroot_soup','mushroom_stew','rabbit_stew','suspicious_stew','dried_kelp','melon_slice','sweet_berries','glow_berries','chorus_fruit',
+  'cooked_beef','cooked_porkchop','cooked_mutton','cooked_chicken','cooked_rabbit','cooked_cod','cooked_salmon','pufferfish','tropical_fish','cod','salmon','beef','porkchop','mutton','chicken','rabbit','rotten_flesh','spider_eye','honey_bottle','cookie','pumpkin_pie','cake'
 ]);
 
 function isFood(item) { return FOOD_NAMES.has(item?.name); }
@@ -15,7 +12,7 @@ class Automation {
     this.config = config;
     this.busyEat = false;
     this.busyArmor = false;
-    this.noFoodNotified = false;
+    this.noFoodAnnounced = false;
   }
 
   armorRank(item) {
@@ -43,16 +40,14 @@ class Automation {
     if (this.busyArmor || !this.config.automation.autoEquipArmor || !this.bot.entity) return;
     this.busyArmor = true;
     try {
-      for (const destination of ['head', 'torso', 'legs', 'feet']) {
+      for (const destination of ['head','torso','legs','feet']) {
         const slot = this.bot.getEquipmentDestSlot(destination);
         const equipped = this.bot.inventory.slots[slot];
         const currentRank = this.armorRank(equipped);
         const candidates = this.bot.inventory.items()
           .filter(i => this.armorDestination(i.name) === destination)
           .sort((a, b) => this.armorRank(b) - this.armorRank(a));
-        if (candidates[0] && this.armorRank(candidates[0]) > currentRank) {
-          await this.bot.equip(candidates[0], destination);
-        }
+        if (candidates[0] && this.armorRank(candidates[0]) > currentRank) await this.bot.equip(candidates[0], destination);
       }
     } catch (err) {
       console.log(`[automation] armor: ${err.message}`);
@@ -63,22 +58,20 @@ class Automation {
 
   async eatIfNeeded() {
     if (this.busyEat || !this.config.automation.autoEat || !this.bot.entity) return;
-
-    // Minecraft normally does not allow eating at full hunger, so a damaged bot
-    // can only auto-eat once there is room in the food bar. Hunger < 10 always triggers.
     const needsFood = this.bot.food < 10 || (this.bot.health < this.bot.maxHealth && this.bot.food < 20);
-    if (!needsFood) return;
-
+    if (!needsFood) {
+      this.noFoodAnnounced = false;
+      return;
+    }
     const food = findFood(this.bot);
     if (!food) {
-      if (!this.noFoodNotified) {
-        this.noFoodNotified = true;
-        try { this.bot.chat('I have no food left.'); } catch {}
+      if (!this.noFoodAnnounced) {
+        this.noFoodAnnounced = true;
+        this.bot.chat('I have no food left.');
       }
       return;
     }
-
-    this.noFoodNotified = false;
+    this.noFoodAnnounced = false;
     this.busyEat = true;
     try {
       await this.bot.equip(food, 'hand');
@@ -91,6 +84,7 @@ class Automation {
   }
 
   async tick() {
+    // Survival automation is deliberately tiny and never creates a user task.
     await this.eatIfNeeded();
     await this.equipBestArmor();
   }
