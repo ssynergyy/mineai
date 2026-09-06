@@ -13,8 +13,6 @@ class Automation {
     this.busyEat = false;
     this.busyArmor = false;
     this.noFoodAnnounced = false;
-    this.lastArmorFingerprint = null;
-    this.lastArmorCheck = 0;
   }
 
   armorRank(item) {
@@ -40,19 +38,6 @@ class Automation {
 
   async equipBestArmor() {
     if (this.busyArmor || !this.config.automation.autoEquipArmor || !this.bot.entity) return;
-    const now = Date.now();
-    if (now - this.lastArmorCheck < 1000) return;
-    const fingerprint = ['head','torso','legs','feet'].map(destination => {
-      const slot = this.bot.getEquipmentDestSlot(destination);
-      const equipped = this.bot.inventory.slots[slot];
-      const best = this.bot.inventory.items()
-        .filter(i => this.armorDestination(i.name) === destination)
-        .sort((a, b) => this.armorRank(b) - this.armorRank(a))[0];
-      return `${destination}:${equipped?.type ?? 0}:${best?.type ?? 0}:${best?.count ?? 0}`;
-    }).join('|');
-    this.lastArmorCheck = now;
-    if (fingerprint === this.lastArmorFingerprint) return;
-    this.lastArmorFingerprint = fingerprint;
     this.busyArmor = true;
     try {
       for (const destination of ['head','torso','legs','feet']) {
@@ -76,8 +61,6 @@ class Automation {
     const needsFood = this.bot.food < 10 || (this.bot.health < this.bot.maxHealth && this.bot.food < 20);
     if (!needsFood) {
       this.noFoodAnnounced = false;
-    this.lastArmorFingerprint = null;
-    this.lastArmorCheck = 0;
       return;
     }
     const food = findFood(this.bot);
@@ -89,8 +72,6 @@ class Automation {
       return;
     }
     this.noFoodAnnounced = false;
-    this.lastArmorFingerprint = null;
-    this.lastArmorCheck = 0;
     this.busyEat = true;
     try {
       await this.bot.equip(food, 'hand');

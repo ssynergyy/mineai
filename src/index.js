@@ -52,7 +52,7 @@ bot.once('spawn', () => {
   automation = new Automation(bot, config);
   agent = new Agent(bot);
 
-  automationTimer = setInterval(() => { void automation?.tick(); }, 1000);
+  automationTimer = setInterval(() => { void automation?.tick(); }, 2500);
   protectionTimer = setInterval(() => security?.maintainProtectedFollow(), 1000);
   securityScanTimer = setInterval(() => security?.scanPlayers(), 1000);
   securityCombatTimer = setInterval(() => security?.maintainEmergency(), 250);
