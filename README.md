@@ -1,107 +1,99 @@
-# Mineflayer + llama.cpp Autonomous Agent
+# Mineflayer + llama.cpp Autonomous Agent v1.3
 
-A Minecraft bot whose reasoning comes from a local llama.cpp server and whose actions are performed by Mineflayer.
-
-## Requirements
-
-- Node.js 18+
-- A Minecraft Java server the bot can join
-- llama.cpp HTTP server running on `http://127.0.0.1:11111`
-- A model/chat template that can use OpenAI-style tool calling. llama.cpp supports `/v1/chat/completions` and tool use; some models work better than others.
+Autonomous Minecraft bot using Mineflayer for movement/actions and a local llama.cpp OpenAI-compatible server for reasoning.
 
 ## Install
 
 ```bash
 npm install
-```
-
-Copy `.env.example` to `.env` and change the Minecraft settings if necessary:
-
-```bash
 cp .env.example .env
-```
-
-On Windows CMD:
-
-```bat
-copy .env.example .env
-```
-
-Then:
-
-```bash
 npm start
 ```
 
-## How it works
+Edit `.env` for Minecraft/llama settings. `persona.env` contains the separate AI system prompt.
 
-The bot sends the model a compact observation of the Minecraft world. The model can call tools. The Node.js agent executes those tools using Mineflayer.
+## Survival automation
 
-Important: the LLM does NOT manually press WASD for pathfinding. `move_to` uses `mineflayer-pathfinder`, so navigation is handled by the actual pathfinder.
+The local automation layer:
 
-## Built-in tools
+- eats when health is not full or hunger is below half
+- equips better armor automatically
+- detects when inventory has no recognized food
+- automatically eats when needed and reports when it has no food left
 
-- `get_state`
-- `get_inventory`
-- `get_nearby_entities`
-- `find_blocks`
-- `move_to`
-- `follow_player`
-- `stop`
-- `look_at`
-- `equip`
-- `unequip`
-- `dig`
-- `place_block`
-- `craft`
-- `smelt`
-- `eat`
-- `attack`
-- `chat`
-- `wait`
 
-The agent loops over tool calls until the model produces a normal response or the step limit is reached.
+## Trusted owner usernames
 
-## Chat control
+Any incoming username containing `EliteSynergy` is trusted locally, case-insensitively. Examples: `EliteSynergy`, `idddEliteSynergygfse`. Commands from those usernames do not require `COMMAND_PASSWORD`.
 
-Minecraft chat is the main user interface.
+`!stop` is always handled locally and bypasses the AI completely.
+
+## Player lists
+
+Friendly and hostile lists can start in `.env`, but the owner can also change them in-game with normal AI instructions:
+
+```text
+bot, add Steve to friendly
+bot, remove Steve from friendly
+bot, add Steve to hostile
+bot, remove Steve from hostile
+bot, list player lists
+```
+
+Protected players are intentionally NOT configurable in `.env`. Add/remove them in-game:
+
+```text
+bot, protect Steve
+bot, stop protecting Steve
+bot, list player lists
+```
+
+Once protected, the local security layer follows the player. Anything that hurts the protected player is attacked with the best available weapon. The bot also locally defends itself against attackers/mobs. A player whose username contains `EliteSynergy` is never intentionally attacked.
+
+## Tools / abilities
+
+The model can use:
+
+- dig/place blocks
+- 2x2 crafting and crafting-table crafting
+- furnace, smoker, blast furnace
+- furnace output pickup
+- enchantment tables
+- anvils: rename and combine
+- villager trade inspection and trades
+- hopper item dropping
+- player item delivery
+- following and live-entity combat
+- arbitrary-length patrol routes
+- friendly/hostile/protected player-list management
 
 Examples:
 
 ```text
-bot, follow me
-bot, get me 10 oak logs
-bot, go to x 100 y 64 z -30
-bot, make a crafting table
-bot, attack that zombie
+bot, craft 16 bread
+bot, smelt 8 beef in the smoker
+bot, blast smelt 12 iron ore
+bot, enchant my diamond sword with a good option
+bot, rename my sword to Guardian
+bot, list that villager's trades
+bot, trade with villager entity 123 using trade 2 three times
+bot, drop 32 cobblestone on the hopper
+bot, give 10 bread to Steve
 ```
 
-The bot also reacts to direct/private messages when supported by the server.
+Use `get_nearby_entities` first when a command refers to a villager or mob by entity ID.
 
-## llama.cpp
+## Hostile-player approval
 
-The code uses the OpenAI-compatible endpoint:
+Players added to the hostile list are not immediately attacked merely because they are seen. The local security layer whispers the owner:
 
-`POST /v1/chat/completions`
+```text
+yes PlayerName
+no PlayerName
+```
 
-Your llama.cpp server should be reachable at:
+Owner usernames are matched by `EliteSynergy` substring, not exact username.
 
-`http://127.0.0.1:11111/v1`
+## Persona
 
-If your server requires an API key, put it in `.env`.
-
-If your llama.cpp model does not expose a usable model name, the agent automatically asks `/v1/models` and uses the first model returned.
-
-For reliable tool calling, start llama.cpp with the appropriate Jinja/tool-use support for your model. See the official llama.cpp server documentation.
-
-## Safety
-
-The bot is intentionally powerful inside Minecraft, but the action surface is limited to Minecraft/Mineflayer APIs. It does not execute arbitrary shell commands or JavaScript generated by the model.
-
-The model is never allowed to directly run Node.js code.
-
-## Configuration
-
-See `.env.example`.
-
-`AGENT_MAX_STEPS` limits how many tool calls can happen for one request. Increase it for longer autonomous tasks.
+Edit `persona.env` to change the model's system/personality prompt without changing the source code.
