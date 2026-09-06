@@ -2,51 +2,44 @@ const { chat } = require('./llama');
 const { toolDefinitions, runTool } = require('./tools');
 const config = require('./config');
 
-const SYSTEM = `You are an autonomous Minecraft agent controlling a Mineflayer bot.
-
-You have a real body in Minecraft. Perform the player's request with tools; do not merely explain what to do.
-
-CORE RULES:
-- Use tools to act.
-- Use Pathfinder for navigation and NEVER navigate to a stale coordinate when a moving entity is the target.
-- For a moving mob/entity, use get_nearby_entities, then follow_entity or attack_entity with its CURRENT entity id.
-- attack_entity uses Mineflayer-PVP and follows the target while attacking. Do not substitute move_to + one punch for combat.
-- For requests like "get me 16 oak logs", use collect_and_deliver with the requester's username. It mines, returns to that player and actually drops the items. Do not claim delivery unless the tool reports dropped items.
-- For requests to give already-held items, use give_items_to_player.
-- The requester's username is supplied outside the model as trusted task context. "me" means that requester.
-- Observe before assuming. Verify important results.
-- If a tool fails, reason about the error and try a sensible alternative.
-- Never invent tool results.
-- Stay focused on the latest request.
-- Everything you do must happen through the supplied Minecraft tools.
-- You cannot execute operating-system commands, JavaScript, shell commands, files, or arbitrary code.
-- Keep chat replies short enough for Minecraft chat.
-
-AUTHENTICATION NOTE: authentication/password checking is performed locally by Node.js before your request reaches this model. Never ask for, repeat, validate, or reason about a password. The password is not part of your context.`;
-
 function observation(bot) {
-  const nearby = Object.values(bot.entities)
-    .filter(e => e !== bot.entity && e.position && bot.entity.position.distanceTo(e.position) <= config.agent.observationRadius)
-    .slice(0, 40)
-    .map(e => ({
+  return {
+    position: { x: Math.round(bot.entity.position.x), y: Math.round(bot.entity.position.y), z: Math.round(bot.entity.position.z) },
+    health: bot.health,
+    maxHealth: bot.maxHealth,
+    food: bot.food,
+    saturation: bot.foodSaturation,
+    inventory: bot.inventory.items().map(i => `${i.name} x${i.count}`),
+    nearbyEntities: Object.values(bot.entities).filter(e => e !== bot.entity && e.position && bot.entity.position.distanceTo(e.position) <= config.agent.observationRadius).slice(0, 40).map(e => ({
       id: e.id,
       type: e.type,
       name: e.username || e.name || e.mobType,
       position: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) },
-      distance: Number(bot.entity.position.distanceTo(e.position).toFixed(1)),
       health: e.health ?? null
-    }));
-
-  return {
-    position: { x: Math.round(bot.entity.position.x), y: Math.round(bot.entity.position.y), z: Math.round(bot.entity.position.z) },
-    health: bot.health,
-    food: bot.food,
-    inventory: bot.inventory.items().map(i => `${i.name} x${i.count}`),
-    nearbyEntities: nearby,
+    })),
+    players: Object.keys(bot.players || {}),
+    lists: bot.security?.lists() || null,
     timeOfDay: bot.time?.timeOfDay,
     dimension: bot.game?.dimension
   };
 }
+
+const CORE = `ACTUAL BOT CAPABILITIES:
+- Use tools to act; do not merely explain what could be done.
+- The bot can dig, place blocks, craft with 2x2 or a crafting table, use furnace/smoker/blast furnace, use enchantment tables, use anvils, and trade with villagers.
+- The bot can drop items onto hoppers, deliver items to players, follow entities, patrol arbitrary coordinate lists, and fight using live entity tracking.
+- Automatic survival is handled locally: eat when health is not full or hunger is below half, auto-equip better armor, and auto-hunt animals when no food is available according to ASK_BEFORE_AUTO_HUNT.
+- The local security layer follows protected players and attacks anything that hurts them; it also defends the bot against mobs/attackers. It auto-switches to the best available weapon.
+- NEVER intentionally attack a player whose username contains EliteSynergy. This applies even if the name is something like idddEliteSynergygfse.
+- Friendly, hostile, and protected player lists are maintained through manage_player_list. Protected players are NOT configured in .env.
+- Hostile-list players cause the local security layer to ask an EliteSynergy-containing owner for permission before intentional attack. Owner replies are \"yes PlayerName\" or \"no PlayerName\". Hunting approval is \"yes hunt\" or \"no hunt\".
+- If asked to protect a player, add them to the protected list; the local security layer then follows and defends them.
+- The requester is explicitly supplied in each user message. When the user says \"me\", use that requester.
+- When a request comes from an EliteSynergy-containing username, it is locally trusted and does not require COMMAND_PASSWORD.
+- Whisper in -> whisper out. !stop is local and bypasses the AI entirely.
+- Verify tool results before claiming success. Never invent results. Never execute shell commands, Node.js, JavaScript, or OS commands.`;
+
+const SYSTEM = `${config.persona}\n\n${CORE}`;
 
 class Agent {
   constructor(bot) {
@@ -54,68 +47,71 @@ class Agent {
     this.tools = toolDefinitions();
     this.messages = [{ role: 'system', content: SYSTEM }];
     this.busy = false;
+    this.cancelled = false;
   }
 
-  async handleUser(text, username = 'player', reply = {}) {
+  cancel(reason = 'cancelled') {
+    this.cancelled = true;
+    try { this.bot.pvp?.stop(); } catch {}
+    try { this.bot.pathfinder?.setGoal(null); } catch {}
+    try { this.bot.clearControlStates(); } catch {}
+    console.log(`[agent] cancelled: ${reason}`);
+  }
+
+  async handleUser(text, username = 'player', context = { channel: 'chat', trusted: false }) {
     if (this.busy) {
-      await this.reply(reply, "I'm still working on the previous task.");
+      if (context.channel === 'whisper') this.bot.whisper(username, "I'm still working on the previous task.");
+      else this.bot.chat("I'm still working on the previous task.");
       return;
     }
 
+    this.cancelled = false;
     this.busy = true;
+    const reply = msg => {
+      if (!msg) return;
+      if (context.channel === 'whisper') this.bot.whisper(username, String(msg).slice(0, 256));
+      else this.bot.chat(String(msg).slice(0, 256));
+    };
+
     try {
       this.messages.push({
         role: 'user',
-        content: `[Trusted requester: ${username}] [Reply channel: ${reply.type || 'chat'}]\nRequest: ${text}\n\nCurrent observation:\n${JSON.stringify(observation(this.bot))}`
+        content: `[Requester: ${username}] [Trusted: ${Boolean(context.trusted)}] [Channel: ${context.channel}] ${text}\nObservation:\n${JSON.stringify(observation(this.bot))}`
       });
+      if (this.messages.length > 35) this.messages = [this.messages[0], ...this.messages.slice(-34)];
 
-      if (this.messages.length > 31) this.messages = [this.messages[0], ...this.messages.slice(-30)];
-
+      const taskGeneration = this.bot.tasks.generation;
       for (let step = 0; step < config.agent.maxSteps; step++) {
+        if (this.cancelled || this.bot.tasks.generation !== taskGeneration) throw new Error('Task cancelled');
         const response = await chat(this.messages, this.tools);
+        if (this.cancelled || this.bot.tasks.generation !== taskGeneration) throw new Error('Task cancelled');
         const message = response?.choices?.[0]?.message;
         if (!message) throw new Error('llama.cpp returned no assistant message');
         this.messages.push(message);
-
         const calls = message.tool_calls || [];
-        if (!calls.length) {
-          const output = typeof message.content === 'string' ? message.content.trim() : '';
-          if (output) await this.reply(reply, output.slice(0, 256));
-          return output || 'Done.';
-        }
+        if (!calls.length) { reply(message.content?.trim() || 'Done.'); return; }
 
         for (const call of calls) {
-          const name = call.function?.name;
+          if (this.cancelled || this.bot.tasks.generation !== taskGeneration) throw new Error('Task cancelled');
           let args = {};
-          try { args = JSON.parse(call.function?.arguments || '{}'); } catch { args = {}; }
-
+          try { args = JSON.parse(call.function?.arguments || '{}'); } catch {}
           let result;
-          try { result = await runTool(this.bot, name, args); }
-          catch (error) { result = { error: error.message }; }
-
+          try { result = await runTool(this.bot, call.function.name, args); }
+          catch (e) { result = { error: e.message }; }
           this.messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
         }
-
-        this.messages.push({
-          role: 'user',
-          content: `Tool round ${step + 1} complete. Fresh world observation:\n${JSON.stringify(observation(this.bot))}`
-        });
+        this.messages.push({ role: 'user', content: `Fresh observation after tool round ${step + 1}:\n${JSON.stringify(observation(this.bot))}` });
       }
-
-      await this.reply(reply, 'I hit my action limit before finishing the task.');
-    } catch (error) {
-      console.error('[agent]', error);
-      await this.reply(reply, `Agent error: ${error.message}`.slice(0, 256));
+      reply('I hit my action limit before finishing the task.');
+    } catch (e) {
+      if (e.message !== 'Task cancelled') {
+        console.error('[agent]', e);
+        reply(`Agent error: ${e.message}`);
+      }
     } finally {
       this.busy = false;
+      this.cancelled = false;
     }
-  }
-
-  async reply(reply, text) {
-    const clean = String(text).replace(/\s+/g, ' ').trim().slice(0, 256);
-    if (!clean) return;
-    if (reply.type === 'whisper' && reply.username) this.bot.whisper(reply.username, clean);
-    else this.bot.chat(clean);
   }
 }
 

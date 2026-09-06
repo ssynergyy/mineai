@@ -1,74 +1,41 @@
 require('dotenv').config();
 
-const crypto = require('crypto');
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements } = require('mineflayer-pathfinder');
 const { plugin: pvp } = require('mineflayer-pvp');
 const config = require('./config');
 const { Agent } = require('./agent');
+const { Security } = require('./security');
+const { Automation } = require('./automation');
+const { TaskManager } = require('./task');
 
 console.log('Starting Mineflayer + llama.cpp agent...');
 console.log(`Minecraft: ${config.minecraft.host}:${config.minecraft.port}`);
 console.log(`Username:   ${config.minecraft.username}`);
 console.log(`llama.cpp:  ${config.llama.baseUrl}`);
-console.log(`Command password: ${config.command.password ? 'configured' : 'NOT CONFIGURED'}`);
-
-if (!config.command.password) {
-  console.warn('[auth] COMMAND_PASSWORD is empty. Password-authenticated modded chat commands are disabled.');
-}
+console.log(`Auto-hunt:  ${config.automation.autoHunt ? 'enabled' : 'disabled'} (ask first: ${config.automation.askBeforeAutoHunt ? 'yes' : 'no'})`);
 
 const bot = mineflayer.createBot(config.minecraft);
 bot.loadPlugin(pathfinder);
 bot.loadPlugin(pvp);
+bot.tasks = new TaskManager();
 
 let agent;
+let security;
+let automation;
+let automationTimer;
+let protectionTimer;
+let securityScanTimer;
+const recentRaw = new Map();
 
-function timingSafeEqual(a, b) {
-  const aa = Buffer.from(a, 'utf8');
-  const bb = Buffer.from(b, 'utf8');
-  if (aa.length !== bb.length) return false;
-  return crypto.timingSafeEqual(aa, bb);
-}
-
-function stripFormatting(text) {
-  return String(text || '')
-    .replace(/[\u00a7&][0-9a-fk-or]/gi, '')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function parsePasswordCommand(raw) {
-  const password = config.command.password;
-  if (!password) return null;
-  const text = stripFormatting(raw);
-  if (!text) return null;
-
-  // Password must be a standalone token. This prevents "mypasswordXYZ" from authenticating.
-  const escaped = password.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, 'i');
-  const match = re.exec(text);
-  if (!match) return null;
-
-  // Constant-time check against the exact matched token.
-  const token = text.slice(match.index + match[1].length, match.index + match[1].length + password.length);
-  if (!timingSafeEqual(token.toLowerCase(), password.toLowerCase())) return null;
-
-  const before = text.slice(0, match.index).trim();
-  const after = text.slice(match.index + match[0].length).trim();
-  if (!after) return null;
-
-  // In rank-heavy formats, the token immediately before the password is commonly the username.
-  // Use it only as the requester for "me"; the whole rank prefix is never sent to the model.
-  const beforeTokens = before.split(/\s+/).filter(Boolean);
-  const requester = beforeTokens.length ? beforeTokens[beforeTokens.length - 1].replace(/^[<\[({]+|[>\])}]+$/g, '') : null;
-
-  return { command: after, requester: requester || config.command.defaultPlayer || 'player' };
-}
-
-function handleCommand(command, username, type) {
-  if (!agent || !command) return;
-  agent.handleUser(command, username || 'player', { type, username: username || undefined });
+function hardStop(reason = 'manual stop') {
+  bot.tasks.cancel();
+  try { bot.pvp.stop(); } catch {}
+  try { bot.pathfinder.setGoal(null); } catch {}
+  try { bot.clearControlStates(); } catch {}
+  if (agent) agent.cancel(reason);
+  if (security) security.currentProtected = null;
+  console.log(`[bot] ALL TASKS STOPPED: ${reason}`);
 }
 
 bot.once('spawn', () => {
@@ -76,47 +43,123 @@ bot.once('spawn', () => {
   movements.canDig = true;
   movements.allow1by1towers = false;
   bot.pathfinder.setMovements(movements);
+
+  security = new Security(bot, config);
+  bot.security = security;
+  automation = new Automation(bot, config);
   agent = new Agent(bot);
+
+  automationTimer = setInterval(() => { void automation?.tick(); }, 2500);
+  protectionTimer = setInterval(() => security?.maintainProtectedFollow(), 1000);
+  securityScanTimer = setInterval(() => security?.scanPlayers(), 1000);
 
   console.log(`[bot] Spawned at ${bot.entity.position}`);
   console.log('[bot] AI agent ready.');
-  console.log('[bot] PVP plugin loaded.');
+  console.log(`[bot] Persona loaded: ${config.persona.length} chars`);
 });
 
-// Normal Mineflayer chat/whisper handling.
-bot.on('chat', (username, message) => {
-  if (username === bot.username) return;
-  const text = String(message || '').trim();
-  if (!text) return;
+function passwordCommand(text) {
+  const password = config.command.password;
+  if (!password) return null;
+  const escaped = password.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, 'i');
+  const match = re.exec(String(text));
+  if (!match) return null;
+  return String(text).slice(match.index + match[0].length).trim() || null;
+}
 
+function extractCommand(text, trustedUsername = '') {
   const lower = text.toLowerCase();
   const prefix = bot.username.toLowerCase();
-  if (lower.startsWith('bot,') || lower.startsWith('bot:') || lower.startsWith(prefix + ' ')) {
-    const command = text.replace(/^[^,: ]+[\s,:]+/i, '').trim();
-    handleCommand(command, username, 'chat');
+  if (lower.startsWith('bot,') || lower.startsWith('bot:')) return text.replace(/^bot\s*[:,]\s*/i, '').trim();
+  if (lower.startsWith(prefix + ' ')) return text.slice(bot.username.length).trim();
+  if (trustedUsername && security?.isElite(trustedUsername)) return text.trim();
+  return null;
+}
+
+function dispatch(username, message, channel = 'chat') {
+  if (!agent || !message) return;
+  const text = String(message).trim();
+  if (!text) return;
+
+  if (text.toLowerCase() === '!stop') {
+    hardStop(`${username} issued !stop`);
+    return;
   }
+
+  if (security?.permissionMessage(username, text)) return;
+
+  // Any username containing EliteSynergy is locally trusted and bypasses the password.
+  const ownerTrusted = security?.isElite(username) === true;
+  if (ownerTrusted) {
+    const command = extractCommand(text, username);
+    if (command) agent.handleUser(command, username, { channel, trusted: true });
+    return;
+  }
+
+  const authenticated = passwordCommand(text);
+  if (authenticated) {
+    agent.handleUser(authenticated, username, { channel, trusted: true });
+    return;
+  }
+
+  const command = extractCommand(text, username);
+  if (command) agent.handleUser(command, username, { channel, trusted: false });
+}
+
+bot.on('chat', (username, message) => {
+  if (username === bot.username) return;
+  dispatch(username, message, 'chat');
 });
 
 bot.on('whisper', (username, message) => {
   if (username === bot.username) return;
+  dispatch(username, message, 'whisper');
+});
+
+// Raw fallback for rank/mod/plugin chat. Owner-containing raw messages are trusted locally.
+bot.on('messagestr', message => {
   const text = String(message || '').trim();
-  if (text) handleCommand(text, username, 'whisper');
+  if (!text || text === bot.username) return;
+  if (text.toLowerCase() === '!stop') { hardStop('raw !stop'); return; }
+  if (!agent || !security) return;
+  const rawKey = text.toLowerCase();
+  const previous = recentRaw.get(rawKey) || 0;
+  if (Date.now() - previous < 1500) return;
+  recentRaw.set(rawKey, Date.now());
+  if (recentRaw.size > 100) {
+    const cutoff = Date.now() - 5000;
+    for (const [k, t] of recentRaw) if (t < cutoff) recentRaw.delete(k);
+  }
+
+  const ownerEscaped = security.owner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const ownerMatch = text.match(new RegExp(`\\b[^\\s]*${ownerEscaped}[^\\s]*\\b`, 'i'));
+  if (ownerMatch) {
+    const ownerToken = ownerMatch[0];
+    const idx = text.toLowerCase().indexOf(ownerToken.toLowerCase());
+    const after = text.slice(idx + ownerToken.length).trim().replace(/^[:>\-]+\s*/, '');
+    if (after) dispatch(ownerToken, after, 'chat');
+    return;
+  }
+
+  const authenticated = passwordCommand(text);
+  if (authenticated) {
+    const password = config.command.password;
+    const before = text.slice(0, text.toLowerCase().indexOf(password.toLowerCase())).trim();
+    const tokens = before.split(/[^A-Za-z0-9_\-]+/).filter(Boolean);
+    const requester = tokens.length ? tokens[tokens.length - 1] : config.security.owner;
+    agent.handleUser(authenticated, requester, { channel: 'chat', trusted: true });
+  }
 });
 
-// Raw server messages are important on rank/plugin-heavy servers. The password parser runs
-// locally here, before the AI receives anything. We deliberately do not send the raw message.
-bot.on('messagestr', (message, messagePosition) => {
-  if (!config.command.password || !agent) return;
-  const parsed = parsePasswordCommand(message);
-  if (!parsed) return;
-
-  console.log(`[auth] Accepted password command from ${parsed.requester || 'unknown'} via ${messagePosition || 'unknown'} message.`);
-  handleCommand(parsed.command, parsed.requester, 'chat');
-});
-
+bot.on('entityHurt', (entity, source) => security?.onEntityHurt(entity, source));
 bot.on('kicked', reason => console.log('[bot] Kicked:', reason));
 bot.on('error', error => console.error('[bot] Error:', error));
-bot.on('end', reason => {
-  console.log('[bot] Connection ended:', reason || 'unknown');
+bot.on('end', () => {
+  hardStop('connection ended');
+  if (automationTimer) clearInterval(automationTimer);
+  if (protectionTimer) clearInterval(protectionTimer);
+  if (securityScanTimer) clearInterval(securityScanTimer);
+  console.log('[bot] Connection ended. Exiting.');
   process.exit(1);
 });
