@@ -11,12 +11,14 @@ class Security {
     this.enabled = config.security.enabled;
     this.currentProtected = null;
 
-    // Security priority: protected-player defense > bot self-defense > ordinary combat/user tasks.
-    this.emergency = null; // { entityId, reason, priority, startedAt, playerTarget }
-    this.manualPlayerTarget = null; // { entityId, username, startedAt }
+    // Security ownership:
+    // protected-player defense = 100, bot self-defense = 90.
+    // Normal AI/user tasks never override an active security emergency.
+    this.emergency = null;
+    this.manualPlayerTarget = null;
   }
 
-  normalize(name) { return String(name || '').toLowerCase(); }
+  normalize(name) { return String(name || '').trim().toLowerCase(); }
   isElite(name) { return this.normalize(name).includes(this.normalize(this.owner)); }
   samePlayer(a, b) { return this.normalize(a) === this.normalize(b); }
   isFriendly(name) { return [...this.friendly].some(n => this.samePlayer(n, name)) || this.isElite(name); }
@@ -44,6 +46,29 @@ class Security {
     return { [list]: [...this[list]] };
   }
 
+  protectPlayer(name) {
+    name = String(name || '').trim();
+    if (!name) throw new Error('Player name is required');
+    if (this.isElite(name)) throw new Error('EliteSynergy-containing names are owner/trusted, not valid protected targets');
+    this.protected.add(name);
+    this.currentProtected = null;
+    this.maintainProtectedFollow();
+    return { protected: [...this.protected], following: Boolean(this.currentProtected) };
+  }
+
+  unprotectPlayer(name) {
+    return this.remove('protected', name);
+  }
+
+  clearSecurityTarget(reason = 'cleared') {
+    this.emergency = null;
+    this.manualPlayerTarget = null;
+    try { this.bot.pvp?.stop(); } catch {}
+    try { this.bot.pathfinder?.setGoal(null); } catch {}
+    try { this.bot.clearControlStates(); } catch {}
+    console.log(`[security] targets cleared: ${reason}`);
+  }
+
   lists() {
     return {
       owner: this.owner,
@@ -60,25 +85,34 @@ class Security {
       } : null,
       manualPlayerTarget: this.manualPlayerTarget ? {
         target: this.manualPlayerTarget.username,
-        ageMs: Date.now() - this.manualPlayerTarget.startedAt
+        ageMs: Date.now() - this.manualPlayerTarget.startedAt,
+        lockRemainingMs: Math.max(0, this.manualPlayerTarget.lockUntil - Date.now())
       } : null
     };
   }
 
   stopCombat() {
-    this.emergency = null;
-    this.manualPlayerTarget = null;
-    try { this.bot.pvp?.stop(); } catch {}
-    try { this.bot.pathfinder?.setGoal(null); } catch {}
-    try { this.bot.clearControlStates(); } catch {}
+    this.clearSecurityTarget('stop');
   }
 
-  cancelManualPlayerTarget(reason = 'new task') {
+  onNewUserTask(task) {
+    // A player target is protected from accidental task switching for the first 15s.
+    // After that, a genuinely new user task may take back control.
+    if (!this.manualPlayerTarget || this.emergency) return;
+    if (Date.now() < this.manualPlayerTarget.lockUntil) return;
+
+    // A new explicit combat task should establish its own target instead of cancelling twice.
+    if (/\b(attack|kill|fight|defend)\b/i.test(String(task?.text || ''))) return;
+    this.cancelManualPlayerTarget(`new task #${task?.id ?? '?'}`);
+  }
+
+  cancelManualPlayerTarget(reason = 'new task', force = false) {
     if (!this.manualPlayerTarget) return false;
+    if (!force && Date.now() < this.manualPlayerTarget.lockUntil) return false;
     this.manualPlayerTarget = null;
-    // An emergency target still owns combat; do not cancel it.
     if (!this.emergency) {
       try { this.bot.pvp?.stop(); } catch {}
+      try { this.bot.pathfinder?.setGoal(null); } catch {}
     }
     console.log(`[security] manual player target cancelled: ${reason}`);
     return true;
@@ -96,18 +130,18 @@ class Security {
   }
 
   async equipBestWeapon() {
-    const item = this.bot.inventory.items().sort((a, b) => this.weaponScore(b) - this.weaponScore(a))[0];
-    if (!item || this.weaponScore(item) < 0) return null;
+    const candidates = this.bot.inventory.items()
+      .filter(item => this.weaponScore(item) >= 0)
+      .sort((a, b) => this.weaponScore(b) - this.weaponScore(a));
+    const item = candidates[0];
+    if (!item) return null;
+    const held = this.bot.heldItem;
+    if (held && held.type === item.type && held.metadata === item.metadata) return held;
     try { await this.bot.equip(item, 'hand'); return item; } catch { return null; }
   }
 
   entityName(entity) {
     return entity?.username || entity?.name || entity?.displayName || 'unknown';
-  }
-
-  entityStillValid(entityId) {
-    const entity = this.bot.entities[entityId];
-    return entity && entity.position && (entity.type !== 'player' || entity.username);
   }
 
   async startManualCombat(entity, reason = 'user-requested combat') {
@@ -116,44 +150,25 @@ class Security {
     if (entity.type === 'player' && this.isElite(name)) return false;
 
     if (entity.type === 'player') {
+      const now = Date.now();
       this.manualPlayerTarget = {
         entityId: entity.id,
         username: name,
-        startedAt: Date.now()
+        startedAt: now,
+        lockUntil: now + 15000
       };
     }
 
     await this.equipBestWeapon();
-    this.bot.pvp.attack(entity);
+    try { this.bot.pvp.attack(entity); } catch { return false; }
     console.log(`[security] manual combat target ${name} (${reason})`);
-    return true;
-  }
-
-  async engage(entity, reason, priority = 50, lockedPlayer = false) {
-    if (!entity?.position || !this.enabled) return false;
-    const name = this.entityName(entity);
-    if (entity.type === 'player' && this.isElite(name)) return false;
-
-    await this.equipBestWeapon();
-    this.bot.pvp.attack(entity);
-    console.log(`[security] attacking ${name} (${reason})`);
-
-    if (lockedPlayer || entity.type === 'player') {
-      this.manualPlayerTarget = {
-        entityId: entity.id,
-        username: name,
-        startedAt: Date.now()
-      };
-    }
     return true;
   }
 
   engageEmergency(entity, reason, priority) {
     if (!entity?.position || !this.enabled) return false;
     const name = this.entityName(entity);
-    if (entity.type === 'player' && (this.isElite(name) || this.isFriendly(name))) {
-      return false;
-    }
+    if (entity.type === 'player' && (this.isElite(name) || this.isFriendly(name))) return false;
 
     const existingPriority = this.emergency?.priority ?? -1;
     if (this.emergency && this.emergency.priority > priority) return false;
@@ -167,9 +182,10 @@ class Security {
       playerTarget: entity.type === 'player'
     };
     this.manualPlayerTarget = entity.type === 'player'
-      ? { entityId: entity.id, username: name, startedAt: Date.now() }
+      ? { entityId: entity.id, username: name, startedAt: Date.now(), lockUntil: Date.now() + 15000 }
       : null;
 
+    try { this.bot.pathfinder?.setGoal(null); } catch {}
     void this.equipBestWeapon();
     try { this.bot.pvp.attack(entity); } catch (err) { console.error('[security] pvp:', err.message); }
     console.log(`[security] EMERGENCY target ${name} (${reason}, priority ${priority})`);
@@ -199,7 +215,7 @@ class Security {
     this.pending.delete(pendingKey);
     const entity = Object.values(this.bot.entities).find(e => e.type === 'player' && this.samePlayer(e.username, pendingKey));
     if (decision === 'yes' && entity && !this.isElite(entity.username)) {
-      void this.engage(entity, 'owner-approved hostile player', 60, true);
+      void this.startManualCombat(entity, 'owner-approved hostile player');
       this.bot.whisper(username, `Attacking ${entity.username}.`);
     } else {
       this.bot.whisper(username, `Not attacking ${pendingKey}.`);
@@ -210,50 +226,49 @@ class Security {
   onEntityHurt(entity, source) {
     if (!this.enabled || !entity || !source?.position) return;
 
-    if (entity === this.bot.entity) {
-      const name = this.entityName(source);
-      if (source.type === 'player' && this.isElite(name)) {
-        // EliteSynergy-containing users can never become an attack target.
-        if (!this.protected.size) this.stopCombat();
-        return;
-      }
-
-      // Self-defense is priority 90, below protected-player defense at 100.
-      this.engageEmergency(source, 'attacked bot', 90);
-      return;
-    }
-
+    // Protected-player defense wins over everything else.
     if (entity.type === 'player' && this.isProtected(entity.username)) {
       const name = this.entityName(source);
       if (source.type === 'player' && (this.isElite(name) || this.isFriendly(name))) return;
-
-      // Protecting a protected player is the highest security priority.
       this.engageEmergency(source, `protecting ${entity.username}`, 100);
+      return;
+    }
+
+    // Self-defense is mandatory unless a protected-player defense is already active.
+    if (entity === this.bot.entity) {
+      const name = this.entityName(source);
+      if (source.type === 'player' && this.isElite(name)) {
+        if (!this.protected.size) this.stopCombat();
+        return;
+      }
+      if (this.emergency?.priority >= 100) return;
+      this.engageEmergency(source, 'attacked bot', 90);
     }
   }
 
   maintainEmergency() {
-    if (!this.emergency) {
-      if (this.manualPlayerTarget) {
-        const e = this.bot.entities[this.manualPlayerTarget.entityId];
-        const elapsed = Date.now() - this.manualPlayerTarget.startedAt;
-        if (e?.position) {
-          void this.equipBestWeapon();
-          try { this.bot.pvp.attack(e); } catch {}
-        } else if (elapsed >= 15000) {
-          this.manualPlayerTarget = null;
-        }
+    if (this.emergency) {
+      const e = this.bot.entities[this.emergency.entityId];
+      if (!e?.position || (typeof e.health === 'number' && e.health <= 0)) {
+        console.log(`[security] emergency target ended: ${this.emergency.reason}`);
+        this.emergency = null;
+        this.manualPlayerTarget = null;
+        try { this.bot.pvp?.stop(); } catch {}
+        this.bot.agent?.resumeAfterSecurity?.();
+        return;
       }
+
+      // Keep the emergency active and keep the best weapon equipped.
+      void this.equipBestWeapon();
+      try { this.bot.pvp.attack(e); } catch {}
       return;
     }
 
-    const e = this.bot.entities[this.emergency.entityId];
+    if (!this.manualPlayerTarget) return;
+    const e = this.bot.entities[this.manualPlayerTarget.entityId];
     if (!e?.position || (typeof e.health === 'number' && e.health <= 0)) {
-      console.log(`[security] emergency target ended: ${this.emergency.reason}`);
-      this.emergency = null;
       this.manualPlayerTarget = null;
       try { this.bot.pvp?.stop(); } catch {}
-      this.bot.agent?.resumeAfterSecurity?.();
       return;
     }
 
@@ -272,18 +287,26 @@ class Security {
 
   maintainProtectedFollow() {
     if (!this.enabled || this.protected.size === 0 || !this.bot.entity) return;
-
-    // Any emergency defense owns movement. Do not let follow overwrite its path.
     if (this.emergency) return;
 
     const candidates = [...this.protected]
-      .map(name => this.bot.players[name] || Object.values(this.bot.players).find(p => this.samePlayer(p?.username, name)))
+      .map(name => {
+        const exact = this.bot.players[name];
+        if (exact?.entity) return exact;
+        return Object.values(this.bot.players).find(p => this.samePlayer(p?.username, name));
+      })
       .filter(p => p?.entity);
     if (!candidates.length) return;
+
     const target = candidates.sort((a, b) => this.bot.entity.position.distanceTo(a.entity.position) - this.bot.entity.position.distanceTo(b.entity.position))[0];
     if (!target?.entity) return;
     this.currentProtected = target.username;
-    try { this.bot.pathfinder.setGoal(new goals.GoalFollow(target.entity, 2), true); } catch {}
+
+    try {
+      const current = this.bot.pathfinder.goal;
+      const followsSame = current instanceof goals.GoalFollow && current.entity?.id === target.entity.id;
+      if (!followsSame) this.bot.pathfinder.setGoal(new goals.GoalFollow(target.entity, 2), true);
+    } catch {}
   }
 }
 

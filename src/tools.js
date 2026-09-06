@@ -165,6 +165,8 @@ function toolDefinitions() {
     fn('list_villager_trades', 'Inspect the trades of a nearby villager.', obj({ entityId: { type: 'number' } }, ['entityId'])),
     fn('chat', 'Send public Minecraft chat.', obj({ message: { type: 'string' } }, ['message'])),
     fn('whisper', 'Whisper a player.', obj({ player: { type: 'string' }, message: { type: 'string' } }, ['player','message'])),
+    fn('protect_player', 'Locally register a player as protected and automatically follow them. Use player=me to protect the current requester.', obj({ player: { type: 'string' } }, ['player'])),
+    fn('unprotect_player', 'Stop protecting a player and remove them from the protected list.', obj({ player: { type: 'string' } }, ['player'])),
     fn('manage_player_list', 'Manage friendly/hostile/protected player lists. Protected is runtime-only and must not use .env.', obj({ action: { type: 'string', enum: ['list','add_friendly','remove_friendly','add_hostile','remove_hostile','add_protected','remove_protected'] }, player: { type: 'string' } }, ['action'])),
     fn('queue_subtasks', 'Create sub-tasks under the currently executing main task. subPriority is 1-100; executeOnlyAfter may be null, previous, or an existing task id.', obj({ subtasks: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, subPriority: { type: 'number' }, executeOnlyAfter: {}, note: { type: 'string' } }, required: ['text','subPriority'], additionalProperties: false } } }, ['subtasks'])),
     fn('get_task_queue', 'Inspect all queued, waiting, running, and completed task metadata.', obj()),
@@ -384,6 +386,20 @@ async function runTool(bot, name, args) {
     }
     case 'chat': bot.chat(String(args.message)); return { sent: String(args.message) };
     case 'whisper': bot.whisper(String(args.player), String(args.message)); return { whispered: String(args.player) };
+    case 'protect_player': {
+      const s = bot.security; if (!s) throw new Error('Security system not initialized');
+      let player = String(args.player || '').trim();
+      if (!player || /^me$/i.test(player) || /^self$/i.test(player) || /^myself$/i.test(player)) player = bot.agentContext?.username || bot.username;
+      const result = s.protectPlayer(player);
+      return { ...result, player };
+    }
+    case 'unprotect_player': {
+      const s = bot.security; if (!s) throw new Error('Security system not initialized');
+      let player = String(args.player || '').trim();
+      if (!player || /^me$/i.test(player) || /^self$/i.test(player) || /^myself$/i.test(player)) player = bot.agentContext?.username || bot.username;
+      const result = s.unprotectPlayer(player);
+      return { ...result, player };
+    }
     case 'manage_player_list': {
       const s = bot.security; if (!s) throw new Error('Security system not initialized');
       if (args.action === 'list') return s.lists();

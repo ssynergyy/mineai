@@ -48,10 +48,10 @@ const CORE = `ACTUAL BOT CAPABILITIES:
 - Use tools to act; do not merely explain what could be done.
 - You can dig, place blocks, craft with 2x2 or a crafting table, use furnace/smoker/blast furnace, enchant, use anvils, trade with villagers, drop onto hoppers, deliver items, follow entities, patrol, and fight.
 - Automatic survival is local: eat when appropriate and auto-equip better armor. If there is no food, the bot reports it; it never auto-hunts.
-- Security is outside the AI and has priority over ordinary tasks. Bot self-defense is always priority #1 unless protected-player defense is active; protected-player defense is the higher security priority when protecting someone.
+- Security is outside the AI and has absolute control over ordinary tasks. Protected-player defense has the highest security priority; otherwise bot self-defense is priority #1 and must never be ignored.
 - Security emergencies can pause the current AI task and resume it afterward. NEVER intentionally attack any player whose username contains EliteSynergy.
-- Player combat targets are retained for at least 15 seconds or until dead, !stop, or an actually conflicting/canceling task takes over.
-- Friendly, hostile, and protected lists are maintained in-game. Protected players are runtime-only.
+- Player combat targets are retained for at least 15 seconds, then may be cancelled by a genuinely new conflicting task; they also end when the target dies or !stop is used.
+- Friendly, hostile, and protected lists are maintained in-game. Use protect_player for direct protection; protected players are runtime-only.
 - Multiple tasks are remembered. Top-level priority levels are Top > High > Medium > Low > Background. Within an equal priority, use the AI note/rank and then prefer the newest task.
 - Complex goals SHOULD be decomposed. Use queue_subtasks to create concrete sub-steps with subPriority 1-100 and executeOnlyAfter dependencies. Do not perform a giant goal as one opaque action when it is safer to plan prerequisites first.
 - A subtask with executeOnlyAfter must not execute until that prerequisite is completed.
@@ -127,6 +127,7 @@ class Agent {
     }
     const task = this._makeTask({ text: normalizedText, username, context, ...options, priority: explicitPriority });
     this.queue.push(task);
+    this.bot.security?.onNewUserTask?.(task);
     this.bot.agentQueueLength = this.queue.filter(t => t.status === 'queued' || t.status === 'waiting').length;
 
     // Automatically plan clearly multi-step goals before executing the parent task.

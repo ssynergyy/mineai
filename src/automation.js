@@ -84,9 +84,10 @@ class Automation {
   }
 
   async tick() {
-    // Survival automation is deliberately tiny and never creates a user task.
+    // Security owns movement/combat. Do not let routine survival automation steal the hand or path during an emergency.
+    if (this.bot.security?.emergency) return;
     await this.eatIfNeeded();
-    await this.equipBestArmor();
+    if (!this.bot.security?.emergency) await this.equipBestArmor();
   }
 }
 
