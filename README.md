@@ -1,4 +1,4 @@
-# Mineflayer + llama.cpp Autonomous Agent v1.3
+# Mineflayer + llama.cpp Autonomous Agent v1.5.1
 
 Autonomous Minecraft bot using Mineflayer for movement/actions and a local llama.cpp OpenAI-compatible server for reasoning.
 
@@ -19,8 +19,9 @@ The local automation layer:
 - eats when health is not full or hunger is below half
 - equips better armor automatically
 - detects when inventory has no recognized food
-- automatically eats when needed and reports when it has no food left
+- reports when its inventory has no food left
 
+The bot does not auto-hunt.
 
 ## Trusted owner usernames
 
@@ -97,3 +98,14 @@ Owner usernames are matched by `EliteSynergy` substring, not exact username.
 ## Persona
 
 Edit `persona.env` to change the model's system/personality prompt without changing the source code.
+
+## v1.5.1 Queue system
+Top-level tasks have five priority levels: `top`, `high`, `medium`, `low`, `background`. The default comes from `DEFAULT_TASK_PRIORITY` in `.env` and the example defaults to `medium`.
+
+Within an equal top-level priority, AI-generated queue notes/tie ranks can decide order; when no useful note exists, the newest task wins.
+
+Complex goals are automatically sent through a planning pass when they look multi-step. The planner can create sub-tasks with `subPriority` from 1-100 and explicit `executeOnlyAfter` dependencies. During a running task the AI can also create more sub-tasks with `queue_subtasks`.
+
+The retry guard tracks repeated failures per task. Two repeated failures of the same tool+arguments are allowed; a third identical failing attempt is blocked and the AI is forced to change strategy.
+
+Security remains outside the normal task queue. Emergency self-defense pauses ordinary work and resumes it afterward. Protection emergencies are higher priority than self-defense. `!stop` clears the entire queue and all security combat state.
