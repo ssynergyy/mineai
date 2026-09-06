@@ -24,10 +24,10 @@ function observation(bot) {
     maxHealth: bot.maxHealth,
     food: bot.food,
     saturation: bot.foodSaturation,
-    inventory: bot.inventory.items().map(i => `${i.name} x${i.count}`),
+    inventory: bot.inventory.items().map(i => `${i.name} x${i.count}`).slice(0, 36),
     nearbyEntities: Object.values(bot.entities)
       .filter(e => e !== bot.entity && e.position && bot.entity.position.distanceTo(e.position) <= config.agent.observationRadius)
-      .slice(0, 40)
+      .slice(0, 24)
       .map(e => ({
         id: e.id,
         type: e.type,
@@ -38,7 +38,7 @@ function observation(bot) {
     players: Object.keys(bot.players || {}),
     lists: bot.security?.lists() || null,
     activeTask: bot.tasks?.name || 'idle',
-    taskQueue: bot.agent?.queueSnapshot?.() || [],
+    taskQueue: (bot.agent?.queueSnapshot?.() || []).slice(0, 12),
     timeOfDay: bot.time?.timeOfDay,
     dimension: bot.game?.dimension
   };
@@ -277,8 +277,12 @@ class Agent {
         role: 'user',
         content: `[Task #${task.id}] [Priority: ${task.priority}] [Requester: ${task.username}] [Trusted: ${Boolean(task.context.trusted)}] [Channel: ${task.context.channel}] ${task.text}\nQueue:${JSON.stringify(this.queueSnapshot())}\nObservation:\n${JSON.stringify(observation(this.bot))}`
       });
-      if (this.messages.length > 45) this.messages = [this.messages[0], ...this.messages.slice(-44)];
+      const maxHistory = Math.max(10, config.agent.maxHistoryMessages);
+      if (this.messages.length > maxHistory + 1) this.messages = [this.messages[0], ...this.messages.slice(-(maxHistory))];
 
+      let loopState = null;
+      let progresslessRounds = 0;
+      let statusLikeFollowupUsed = false;
       for (let step = 0; step < config.agent.maxSteps; step++) {
         if (!this.bot.tasks.isCurrent(taskToken) || this.securityPaused) throw new Error('Task superseded');
         const response = await chat(this.messages, this.tools);
@@ -288,7 +292,14 @@ class Agent {
         this.messages.push(message);
         const calls = message.tool_calls || [];
         if (!calls.length) {
-          if (!task.waitingForChildren) reply(message.content?.trim() || 'Done.');
+          const text = String(message.content || '').trim();
+          const looksLikeStatus = /\b(still working|working on it|one moment|give me a moment|processing|i'm working|im working)\b/i.test(text);
+          if (looksLikeStatus && !task.waitingForChildren && !statusLikeFollowupUsed) {
+            statusLikeFollowupUsed = true;
+            this.messages.push({ role: 'user', content: 'Do not give a progress-only reply. Either perform the next concrete action with a tool, state a specific blocker, or confirm the task is actually complete.' });
+            continue;
+          }
+          if (!task.waitingForChildren) reply(text || 'Done.');
           task.status = task.waitingForChildren ? 'waiting' : 'completed';
           if (task.status === 'completed') this.subtaskCompleted(task);
           return;
@@ -299,7 +310,22 @@ class Agent {
           let args = {};
           try { args = JSON.parse(call.function?.arguments || '{}'); } catch {}
           const fingerprint = `${call.function.name}:${JSON.stringify(args)}`;
+          const stateBefore = JSON.stringify({
+            position: observation(this.bot).position,
+            health: this.bot.health,
+            food: this.bot.food,
+            inventory: this.bot.inventory.items().reduce((m, i) => { m[i.name] = (m[i.name] || 0) + i.count; return m; }, {})
+          });
+          const loopKey = `${fingerprint}|${stateBefore}`;
           const repeats = task.failures[fingerprint] || 0;
+          if (config.agent.loopGuard && loopState?.key === loopKey && loopState.count >= config.agent.loopRepeatLimit) {
+            const result = { error: 'Loop guard: the same action is being repeated without meaningful state change. Choose a different strategy or inspect the current state.' };
+            this.messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
+            this.messages.push({ role: 'user', content: 'LOOP GUARD TRIGGERED. Stop repeating the same action with the same state. Use a different tool/target/route or explain the concrete blocker.' });
+            loopState = null;
+            progresslessRounds++;
+            continue;
+          }
           if (repeats >= 2) {
             const result = { error: 'Repeated identical failed attempt blocked. You must change strategy or inspect state before retrying the same action.' };
             this.messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
@@ -317,6 +343,21 @@ class Agent {
           if (failed && repeats >= 1) {
             this.messages.push({ role: 'user', content: `This action has already failed before: ${call.function.name}. Do not blindly repeat it. Inspect the failure and try a materially different approach.` });
           }
+          const stateAfter = JSON.stringify({
+            position: observation(this.bot).position,
+            health: this.bot.health,
+            food: this.bot.food,
+            inventory: this.bot.inventory.items().reduce((m, i) => { m[i.name] = (m[i.name] || 0) + i.count; return m; }, {})
+          });
+          if (config.agent.loopGuard && !failed) {
+            const noProgress = stateBefore === stateAfter;
+            if (loopState?.key === loopKey && noProgress) loopState.count += 1;
+            else loopState = { key: loopKey, count: noProgress ? 1 : 0 };
+            progresslessRounds = noProgress ? progresslessRounds + 1 : 0;
+          } else {
+            loopState = null;
+            progresslessRounds = 0;
+          }
           this.messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) });
           if (task.waitingForChildren) {
             waiting = true;
@@ -325,6 +366,10 @@ class Agent {
         }
         if (waiting) break;
         this.messages.push({ role: 'user', content: `Fresh observation after tool round ${step + 1}:\n${JSON.stringify(observation(this.bot))}` });
+        if (config.agent.loopGuard && progresslessRounds >= 4) {
+          this.messages.push({ role: 'user', content: 'The bot state has not changed across repeated actions. Change strategy now; do not repeat the same tool call.' });
+          progresslessRounds = 0;
+        }
       }
 
       if (task.waitingForChildren) return;

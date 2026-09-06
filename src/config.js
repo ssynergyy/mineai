@@ -44,7 +44,8 @@ module.exports = {
   llama: {
     baseUrl: (process.env.LLAMA_URL || 'http://127.0.0.1:11111/v1').replace(/\/+$/, ''),
     apiKey: process.env.LLAMA_API_KEY || 'no-key-required',
-    model: process.env.LLAMA_MODEL || ''
+    model: process.env.LLAMA_MODEL || '',
+    timeoutMs: number('LLAMA_TIMEOUT_MS', 60000)
   },
   command: {
     password: process.env.COMMAND_PASSWORD || ''
@@ -61,10 +62,13 @@ module.exports = {
   },
   persona: loadPersona(),
   agent: {
-    maxSteps: number('AGENT_MAX_STEPS', 24),
+    maxSteps: number('AGENT_MAX_STEPS', 20),
     temperature: number('AGENT_TEMPERATURE', 0.2),
-    maxTokens: number('AGENT_MAX_TOKENS', 900),
-    observationRadius: number('AGENT_OBSERVATION_RADIUS', 20),
+    maxTokens: number('AGENT_MAX_TOKENS', 800),
+    observationRadius: number('AGENT_OBSERVATION_RADIUS', 16),
+    maxHistoryMessages: number('AGENT_MAX_HISTORY_MESSAGES', 30),
+    loopGuard: bool('AGENT_LOOP_GUARD', true),
+    loopRepeatLimit: number('AGENT_LOOP_REPEAT_LIMIT', 2),
     defaultPriority: String(process.env.DEFAULT_TASK_PRIORITY || 'medium').trim().toLowerCase()
   }
 };

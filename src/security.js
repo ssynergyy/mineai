@@ -16,6 +16,8 @@ class Security {
     // Normal AI/user tasks never override an active security emergency.
     this.emergency = null;
     this.manualPlayerTarget = null;
+    this.lastWeaponCheck = 0;
+    this.lastWeaponFingerprint = null;
   }
 
   normalize(name) { return String(name || '').trim().toLowerCase(); }
@@ -130,13 +132,18 @@ class Security {
   }
 
   async equipBestWeapon() {
+    const now = Date.now();
+    if (now - this.lastWeaponCheck < 500) return this.bot.heldItem;
+    this.lastWeaponCheck = now;
     const candidates = this.bot.inventory.items()
       .filter(item => this.weaponScore(item) >= 0)
       .sort((a, b) => this.weaponScore(b) - this.weaponScore(a));
     const item = candidates[0];
     if (!item) return null;
+    const fingerprint = `${item.type}:${item.metadata ?? 0}`;
     const held = this.bot.heldItem;
-    if (held && held.type === item.type && held.metadata === item.metadata) return held;
+    if ((held && `${held.type}:${held.metadata ?? 0}` === fingerprint) || this.lastWeaponFingerprint === fingerprint) return held || item;
+    this.lastWeaponFingerprint = fingerprint;
     try { await this.bot.equip(item, 'hand'); return item; } catch { return null; }
   }
 

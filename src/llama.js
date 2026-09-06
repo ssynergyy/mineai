@@ -1,6 +1,7 @@
 const config = require("./config");
+let cachedModel = null;
 
-async function request(path, body, timeoutMs = 120000) {
+async function request(path, body, timeoutMs = config.llama.timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -28,6 +29,7 @@ async function request(path, body, timeoutMs = 120000) {
 
 async function getModel() {
   if (config.llama.model) return config.llama.model;
+  if (cachedModel) return cachedModel;
 
   const response = await fetch(`${config.llama.baseUrl}/models`, {
     headers: { "Authorization": `Bearer ${config.llama.apiKey}` }
@@ -41,6 +43,7 @@ async function getModel() {
   const model = data?.data?.[0]?.id;
 
   if (!model) throw new Error("llama.cpp returned no model from /v1/models");
+  cachedModel = model;
   return model;
 }
 
